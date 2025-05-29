@@ -34,27 +34,35 @@ USER_INDEX_NAME = os.getenv("USER_INDEX_NAME", "user_profiles_alias")
 
 @mcp.tool(description="Fetches the full details of a specific job posting using its board_id.")
 async def get_job_details(board_id: str) -> Dict[str, Any]:
-    logger.info(f"Tool 'get_job_details' called with board_id: {board_id}")
+    # User requested to see input and generated query
+    logger.info(f"Tool 'get_job_details' called with board_id: '{board_id}'") # Existing log
     if not os_service.is_connected():
         return {"error": "OpenSearch service is not connected."}
     try:
         if not board_id:
-            # FastMCP might do some validation based on type hints, but explicit checks are good.
             logger.warning("board_id is missing for get_job_details")
-            return {"error": "Missing required argument: board_id"} # Should not happen if schema is enforced by FastMCP
+            return {"error": "Missing required argument: board_id"}
         
         query = {"query": {"term": {JOB_FIELD_MAP["board_id"]: board_id}}}
+        logger.info(f"Generated OpenSearch query for 'get_job_details': {json.dumps(query, indent=2)}") # New log
+        
         results = os_service.execute_query(index_name=JOB_INDEX_NAME, query=query)
-        return results[0] if results else {"error": f"Job with board_id {board_id} not found."}
+        if results:
+            return results[0]
+        else:
+            logger.warning(f"No results found for 'get_job_details' with board_id: '{board_id}'. This could be due to an invalid board_id or an issue with the index '{JOB_INDEX_NAME}'.")
+            return {"error": f"Job with board_id '{board_id}' not found or index '{JOB_INDEX_NAME}' issue."}
+
     except Exception as e:
         logger.error(f"Exception in get_job_details: {e}")
         return {"error": f"An unexpected error occurred: {str(e)}"}
 
 @mcp.tool(description="Searches for job postings based on various criteria like location, salary, keywords, etc.")
 async def search_jobs_by_criteria(filters: Optional[Dict[str, Any]] = None, text_query: Optional[str] = "", size: Optional[int] = 10) -> List[Dict[str, Any]]:
-    logger.info(f"Tool 'search_jobs_by_criteria' called with filters: {filters}, text_query: '{text_query}', size: {size}")
+    # User requested to see input and generated query
+    logger.info(f"Tool 'search_jobs_by_criteria' called with filters: {filters}, text_query: '{text_query}', size: {size}") # Existing log
     if not os_service.is_connected():
-        return [{"error": "OpenSearch service is not connected."}] # Return list with error dict
+        return [{"error": "OpenSearch service is not connected."}] 
     
     filters = filters or {}
     text_query = text_query or ""
@@ -62,7 +70,11 @@ async def search_jobs_by_criteria(filters: Optional[Dict[str, Any]] = None, text
     try:
         query = generate_job_search_query(text_query=text_query, filters=filters)
         query["size"] = size
+        logger.info(f"Generated OpenSearch query for 'search_jobs_by_criteria': {json.dumps(query, indent=2)}") # New log
+        
         results = os_service.execute_query(index_name=JOB_INDEX_NAME, query=query)
+        if not results:
+             logger.warning(f"No results found for 'search_jobs_by_criteria' with given parameters. This could be due to restrictive criteria or an issue with the index '{JOB_INDEX_NAME}'.")
         return results
     except Exception as e:
         logger.error(f"Exception in search_jobs_by_criteria: {e}")
@@ -79,32 +91,37 @@ async def find_similar_jobs_to_posting(board_id: str, original_job_details: Opti
              return [{"error": "Missing required argument: board_id"}]
 
         if not original_job_details:
-            logger.info(f"Original job details not provided for {board_id}, fetching...")
+            logger.info(f"Original job details not provided for {board_id} for 'find_similar_jobs_to_posting', fetching...")
             details_query = {"query": {"term": {JOB_FIELD_MAP["board_id"]: board_id}}}
+            logger.info(f"Generated OpenSearch query for fetching original job (find_similar): {json.dumps(details_query, indent=2)}") # Log this query too
             details_results = os_service.execute_query(index_name=JOB_INDEX_NAME, query=details_query)
             if not details_results:
-                return [{"error": f"Original job with board_id {board_id} not found."}]
+                return [{"error": f"Original job with board_id {board_id} not found for similarity search."}]
             original_job_details = details_results[0]
         
         query = generate_similar_job_query(board_id=board_id, job_details=original_job_details)
         query["size"] = size
+        logger.info(f"Generated OpenSearch query for 'find_similar_jobs_to_posting': {json.dumps(query, indent=2)}") # New log
         results = os_service.execute_query(index_name=JOB_INDEX_NAME, query=query)
+        if not results:
+             logger.warning(f"No similar jobs found for board_id '{board_id}'.")
         return results
     except Exception as e:
         logger.error(f"Exception in find_similar_jobs_to_posting: {e}")
         return [{"error": f"An unexpected error occurred: {str(e)}"}]
 
 @mcp.tool(description="Summarizes the main points of a job posting.")
-async def summarize_job_posting_main_points(board_id: str) -> str: # Returns a string for this tool
+async def summarize_job_posting_main_points(board_id: str) -> str: 
     logger.info(f"Tool 'summarize_job_posting_main_points' called for board_id: {board_id}")
     if not os_service.is_connected():
-        return json.dumps({"error": "OpenSearch service is not connected."}) # String return, so dump error
+        return json.dumps({"error": "OpenSearch service is not connected."}) 
 
     try:
         if not board_id:
             return json.dumps({"error": "Missing required argument: board_id"})
 
         details_query = {"query": {"term": {JOB_FIELD_MAP["board_id"]: board_id}}}
+        # Not logging this query as it's simple and part of another tool's core logic.
         details_results = os_service.execute_query(index_name=JOB_INDEX_NAME, query=details_query)
         if not details_results:
             return json.dumps({"error": f"Job with board_id {board_id} not found for summarization."})
@@ -126,9 +143,7 @@ async def summarize_job_posting_main_points(board_id: str) -> str: # Returns a s
 @mcp.tool(description="Fetches a user's profile data for recommendations. (Currently placeholder).")
 async def get_user_profile_for_recommendations(user_id: str) -> Dict[str, Any]:
     logger.info(f"Tool 'get_user_profile_for_recommendations' for user_id: {user_id}. Returning placeholder data.")
-    # This tool is a placeholder and does not interact with OpenSearch yet.
-    # When User Profile DB is ready, this will query USER_INDEX_NAME.
-    if not user_id: # Still good to check
+    if not user_id: 
         return {"error": "Missing required argument: user_id"}
         
     mock_profile = {
@@ -146,7 +161,6 @@ async def get_user_profile_for_recommendations(user_id: str) -> Dict[str, Any]:
 
 # (Keep Main Server Execution block)
 if __name__ == "__main__":
-    # (Keep stdio encoding fix)
     if sys.platform == "win32" and os.environ.get('PYTHONIOENCODING') is None:
         sys.stdin.reconfigure(encoding="utf-8")
         sys.stdout.reconfigure(encoding="utf-8")
