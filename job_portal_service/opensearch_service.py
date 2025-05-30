@@ -1,5 +1,6 @@
 import os
 import ssl
+from typing import Optional # Add this import
 from opensearchpy import OpenSearch # Ensure this import is present
 from dotenv import load_dotenv
 
@@ -50,25 +51,61 @@ class OpenSearchService:
     def is_connected(self) -> bool:
         return self.client is not None and self.client.ping()
 
-    def execute_query(self, index_name: str, query: dict) -> list:
+    def fetch_user_data_by_uid(self, uid: str) -> Optional[dict]:
         if not self.is_connected():
-            print("OpenSearch client is not available. Cannot execute query.")
-            # Or raise an exception: raise ConnectionError("OpenSearch client not available")
-            return [] 
-        
+            print("OpenSearch client is not available. Cannot fetch user data.")
+            return None
+
+        index_name = "resume_text-embedding-3-large_3072_100000_300_20250221_175445"
+        query = {
+            "query": {
+                "match": {
+                    "metadata.U_ID": uid
+                }
+            }
+        }
+
         try:
             response = self.client.search(
                 index=index_name,
                 body=query
             )
+            
+            if response['hits']['hits']:
+                return response['hits']['hits'][0]['_source']
+            else:
+                print(f"No document found with U_ID: {uid} in index {index_name}")
+                return None
+        except Exception as e:
+            print(f"Error fetching user data by UID '{uid}' from index '{index_name}': {e}")
+            return None
+
+    def execute_query(self, index_name: str, query: dict) -> list:
+        if not self.is_connected():
+            print("OpenSearch client is not available. Cannot execute query.")
+            # Or raise an exception: raise ConnectionError("OpenSearch client not available")
+            return []
+
+        try:
+            response = self.client.search(
+                index=index_name,
+                body=query,
+                _source_excludes=["vector_field"] # Exclude the vector_field
+            )
             results = []
+            if not response['hits']['hits']:
+                print(f"No results found in index '{index_name}' for the given query.")
+                return []
             for hit in response['hits']['hits']:
                 result_doc = hit['_source']
-                result_doc['_id'] = hit['_id']
-                result_doc['_score'] = hit['_score']
+                # Ensure _id and _score are added only if they exist, though they typically do.
+                if '_id' in hit:
+                    result_doc['_id'] = hit['_id']
+                if '_score' in hit:
+                    result_doc['_score'] = hit['_score']
                 results.append(result_doc)
             return results
         except Exception as e:
             print(f"Error executing OpenSearch query on index '{index_name}': {e}")
-            # print(f"Failed query: {query}") # For debugging
+            # print(f"Failed query: {query}") # For debugging, consider more structured logging
             return []

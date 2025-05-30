@@ -98,39 +98,80 @@ def generate_job_search_query(
 # (Other functions like generate_user_profile_query, generate_user_preference_based_job_query, 
 #  generate_similar_users_query, and generate_similar_job_query remain unchanged)
 # Make sure they are present in the actual file if they were there before.
+
+# Updated mapping based on the new user_profile structure from resume_text-embedding-3-large...
+# Assumes user preference fields are within user_profile["metadata"]
 USER_TO_JOB_FILTER_MAP = {
-    "희망_근무지역": "location", 
-    "희망_근무형태": "employment_type",
-    "전문과목": "specialty",
+    "metadata.USER_DESIRED_LOCATION": "location",
+    "metadata.USER_EMPLOYMENT_TYPE": "employment_type",
+    "metadata.USER_SPECIALTY": "specialty",
 }
-USER_SEMANTIC_FIELDS = {
-    "핵심_술기": "skills",
-}
+
+# USER_SEMANTIC_FIELDS is no longer needed as skills will be accessed directly.
+
 def generate_user_profile_query(user_id: str) -> dict:
+    # This function is assumed to be for a different user index/schema or purpose.
+    # It remains unchanged as per the subtask instructions.
     return {"query": {"term": {"ID": user_id}}}
 
 def generate_user_preference_based_job_query(user_profile: dict, semantic_query_parts: list) -> dict:
     filters = {}
-    current_semantic_texts = list(semantic_query_parts)
-    if user_profile.get("전문과목 및 진료분야"):
-        filters[USER_TO_JOB_FILTER_MAP["전문과목"]] = user_profile["전문과목 및 진료분야"]
-    hopeful_conditions = user_profile.get("희망 근무조건", {})
-    if isinstance(hopeful_conditions, dict):
-        if hopeful_conditions.get("근무지역"):
-            filters[USER_TO_JOB_FILTER_MAP["희망_근무지역"]] = hopeful_conditions["근무지역"]
-        if hopeful_conditions.get("근무형태"):
-            filters[USER_TO_JOB_FILTER_MAP["희망_근무형태"]] = hopeful_conditions["근무형태"]
-    core_skills = user_profile.get("핵심 술기", [])
-    if isinstance(core_skills, list):
-        for skill_entry in core_skills:
-            if isinstance(skill_entry, dict) and skill_entry.get("술기명"):
-                current_semantic_texts.append(skill_entry["술기명"])
-    combined_text_query = " ".join(current_semantic_texts)
+    current_semantic_texts = list(semantic_query_parts) # Start with externally provided semantic parts
+
+    user_metadata = user_profile.get("metadata", {})
+
+    # Populate filters based on USER_TO_JOB_FILTER_MAP
+    # Example for specialty:
+    # user_profile structure: {"metadata": {"USER_SPECIALTY": "Cardiology"}}
+    # USER_TO_JOB_FILTER_MAP: {"metadata.USER_SPECIALTY": "specialty"}
+    # Resulting filters: {"specialty": "Cardiology"}
+    
+    user_specialty_key_in_map = "metadata.USER_SPECIALTY"
+    user_specialty_field_in_profile = "USER_SPECIALTY" # Actual field name in user_profile.metadata
+    if user_specialty_key_in_map in USER_TO_JOB_FILTER_MAP:
+        user_specialty_value = user_metadata.get(user_specialty_field_in_profile)
+        if user_specialty_value:
+            filters[USER_TO_JOB_FILTER_MAP[user_specialty_key_in_map]] = user_specialty_value
+
+    user_location_key_in_map = "metadata.USER_DESIRED_LOCATION"
+    user_location_field_in_profile = "USER_DESIRED_LOCATION"
+    if user_location_key_in_map in USER_TO_JOB_FILTER_MAP:
+        user_location_value = user_metadata.get(user_location_field_in_profile)
+        if user_location_value:
+            filters[USER_TO_JOB_FILTER_MAP[user_location_key_in_map]] = user_location_value
+            
+    user_emp_type_key_in_map = "metadata.USER_EMPLOYMENT_TYPE"
+    user_emp_type_field_in_profile = "USER_EMPLOYMENT_TYPE"
+    if user_emp_type_key_in_map in USER_TO_JOB_FILTER_MAP:
+        user_emp_type_value = user_metadata.get(user_emp_type_field_in_profile)
+        if user_emp_type_value:
+            filters[USER_TO_JOB_FILTER_MAP[user_emp_type_key_in_map]] = user_emp_type_value
+
+    # Handle user skills for semantic text
+    # Assumed structure: user_profile = {"metadata": {"USER_SKILLS": ["skill1", "skill2"] or "skill string"}}
+    user_skills_field_in_profile = "USER_SKILLS"
+    user_skills = user_metadata.get(user_skills_field_in_profile)
+    
+    if user_skills:
+        if isinstance(user_skills, list):
+            current_semantic_texts.extend(user_skills)
+        elif isinstance(user_skills, str):
+            current_semantic_texts.append(user_skills)
+        else:
+            print(f"Warning: User skills field '{user_skills_field_in_profile}' is neither a list nor a string. Skills not added.")
+            
+    # Remove duplicates while preserving order (Python 3.7+)
+    current_semantic_texts = list(dict.fromkeys(current_semantic_texts))
+    combined_text_query = " ".join(current_semantic_texts).strip()
+    
     # This will now call the updated generate_job_search_query.
     # For vector search through this path, this function would need to generate embeddings for combined_text_query
     # and pass query_vector & vector_field_name. Currently, it will rely on text-based fallback.
-    job_query = generate_job_search_query(text_query=combined_text_query, filters=filters)
-    return job_query
+    # job_query = generate_job_search_query(text_query=combined_text_query, filters=filters) # Original line
+    # return job_query # Original line
+
+    # Modified return value as per subtask instructions
+    return {'filters': filters, 'semantic_text': combined_text_query}
 
 def generate_similar_users_query(user_profile: dict) -> dict:
     should_clauses = []
