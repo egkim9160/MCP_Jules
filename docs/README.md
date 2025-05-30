@@ -16,7 +16,7 @@ The server consists of:
 - **`mcp_job_portal_server.py`**: The main server script that initializes the `FastMCP` server and defines tools as decorated Python functions. It manages the stdio communication loop via `mcp.run()`.
 - **`job_portal_service/`**: A Python package containing the core logic:
     - `opensearch_service.py`: Manages the connection to OpenSearch and executes queries.
-    - `query_generators.py`: Contains functions to generate OpenSearch query DSL based on input criteria.
+    - `query_generators.py`: Contains functions to generate OpenSearch query DSL (e.g., `generate_job_search_query`). These can be used by server tools (if complex internal generation is needed) or by the client/agent after obtaining structured conditions from server tools like `generate_search_conditions`.
     - `context_utils.py`: Provides utilities for parsing request context (intended for use by the agent calling this server).
     - `text_formatters.py`: (Currently holds basic text formatting, role may evolve).
 
@@ -24,32 +24,22 @@ This server communicates over stdio using the MCP protocol.
 
 ## Implemented MCP Tools
 
-The server currently exposes the following tools, which can be called by an MCP-compliant agent:
+The server currently exposes the following more atomic and utility-like tools, designed to be orchestrated by an intelligent agent:
 
-1.  **`get_job_details`**:
-    *   Description: Fetches the full details of a specific job posting.
-    *   Input: `board_id: str`
-    *   Output: JSON string of the job details or null.
+1.  **`generate_search_conditions`**:
+    *   Description: Analyzes a raw natural language query and an optional URL context to generate structured search conditions (filters, semantic text components, and context information) suitable for building an OpenSearch query for job postings. This tool incorporates basic Natural Language Understanding (NLU) for query parsing.
+    *   Input: `raw_query: str`, `url_context: Optional[str]`
+    *   Output: JSON string containing a dictionary with keys like `filters` (dict), `semantic_text` (str), `source_context` (str), `board_id` (Optional[str]), `is_detail_view` (bool), `classified_query_type` (str).
 
-2.  **`search_jobs_by_criteria`**:
-    *   Description: Searches for job postings based on various criteria.
-    *   Input: `filters: dict` (for structured data like location, specialty), `text_query: Optional[str]` (for semantic parts), `size: Optional[int]`.
-    *   Output: JSON string of a list of job summaries.
+2.  **`opensearch_query_executor`**:
+    *   Description: Executes a raw OpenSearch Query DSL against a specified index. This is the primary tool for data retrieval.
+    *   Input: `index_name: str`, `query_dsl: Dict[str, Any]`, `size: Optional[int]`
+    *   Output: JSON string of a list of raw OpenSearch result documents, or an error dictionary.
 
-3.  **`find_similar_jobs_to_posting`**:
-    *   Description: Finds job postings similar to a given job posting.
-    *   Input: `board_id: str`, `original_job_details: Optional[dict]`, `size: Optional[int]`.
-    *   Output: JSON string of a list of similar job summaries.
-
-4.  **`summarize_job_posting_main_points`**:
-    *   Description: Provides a basic summary of a job posting by extracting key fields.
-    *   Input: `board_id: str`.
-    *   Output: Plain text summary.
-
-5.  **`get_user_profile_for_recommendations` (Placeholder)**:
-    *   Description: Fetches a user's profile data, structured for recommendations. **Currently returns placeholder/mock data.**
-    *   Input: `user_id: str`.
-    *   Output: JSON string of a mock user profile.
+3.  **`format_job_summary`**:
+    *   Description: Formats a single raw job document (as returned by OpenSearch) into a user-friendly text summary, extracting key fields.
+    *   Input: `job_document: Dict[str, Any]`
+    *   Output: Plain text summary string, or an error message string.
 
 ## How to Run
 
@@ -85,28 +75,27 @@ A test client script, `mcp_test_client.py`, is included in the project root. It 
 **What the Test Client Does:**
 
 -   Starts the `mcp_job_portal_server.py` as a subprocess.
--   Takes the `--query` and optional `--url` from command-line arguments.
--   Uses `job_portal_service.context_utils.analyze_request` to process these inputs into a structured `RequestContext` (identifying `board_id` from URL, classifying query type, etc.). This is logged to the client's console.
--   Implements a basic `map_query_to_tool_call` function that attempts to:
-    -   Determine the appropriate MCP server tool to call (e.g., `search_jobs_by_criteria`).
-    -   Extract simple arguments for the tool from the natural language query (e.g., parsing "월급 1500 이상" into a salary filter and "상급종합병원" into an organization type filter for the `search_jobs_by_criteria` tool). This simulates a very basic NLU step.
-    -   The determined tool and its arguments are logged.
--   Establishes an MCP session with the server and initializes it.
--   (Optionally, can list tools, though this part might be commented out in the client for cleaner output during specific query tests).
--   Dynamically calls the determined MCP tool on the server with the extracted arguments.
--   Prints the response received from the tool call to the client's console.
+-   Takes the `--query` (natural language) and optional `--url` from command-line arguments.
+-   **Calls the server's `generate_search_conditions` tool:** Passes the raw query and URL to the server to get structured search conditions (filters, semantic text, context). This step demonstrates offloading NLU/query parsing to a server tool.
+-   Logs the conditions received from the server.
+-   **Locally generates an OpenSearch Query DSL:** Uses the `generate_job_search_query` function from `job_portal_service.query_generators` with the conditions received from the server. This demonstrates client-side logic for preparing the final database query.
+-   **Calls the server's `opensearch_query_executor` tool:** Sends the target index name (e.g., for jobs) and the locally generated OpenSearch Query DSL to the server for execution.
+-   Logs the search results (raw documents from OpenSearch).
+-   **If results are found, calls the server's `format_job_summary` tool:** Passes the first job document received from the search results to get a formatted text summary.
+-   Logs the summary.
+-   (The client also lists available server tools upon connection for diagnostic purposes).
 
 **Observing Server-Side Query Flow:**
 
 The `mcp_job_portal_server.py` has been enhanced with logging to show how client requests are processed:
--   When `mcp_test_client.py` (or any MCP agent) calls tools like `get_job_details` or `search_jobs_by_criteria`, the **server's console output** will display:
+-   When `mcp_test_client.py` (or any MCP agent) calls tools like `generate_search_conditions` or `opensearch_query_executor`, the **server's console output** will display:
     1.  The arguments received by the tool function.
-    2.  The full OpenSearch query (in JSON format) generated based on those arguments before it's sent to OpenSearch.
+    2.  For `opensearch_query_executor`, the full OpenSearch query (in JSON format) generated based on those arguments before it's sent to OpenSearch.
 
 This allows you to see the translation from a tool call and its parameters into a specific database query, fulfilling the request to demonstrate input/output flow.
 
 **Note on Tool Outputs:**
-The test client's `map_query_to_tool_call` function implements very basic NLU for specific examples. If your query structure significantly differs, it might fall back to a general search or not extract detailed filters. The actual data returned by tools will depend on your OpenSearch index (e.g., the one specified by `JOB_INDEX_NAME` in the server) containing matching data for the criteria extracted by the client's NLU and sent to the server.
+The test client's interaction with `generate_search_conditions` (which uses basic NLU) means that if your query structure significantly differs from the example, it might not extract detailed filters and might pass more of the query as `semantic_text`. The actual data returned by `opensearch_query_executor` will depend on your OpenSearch index containing matching data for the criteria.
 
 ## Future Development
 - Implementation of more tools from the user's comprehensive list (advanced search, filtering, analytics, recommendations).
