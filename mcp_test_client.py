@@ -1,5 +1,6 @@
 # mcp_test_client.py
 import asyncio
+import copy # Added for deepcopy
 import json
 import logging
 import subprocess
@@ -111,9 +112,35 @@ async def main(user_query: str, page_url: Optional[str]):
                             query_vector=query_vector, # Pass the generated vector
                             vector_field_name=DEFAULT_VECTOR_FIELD_NAME # Pass the target vector field name
                         )
-                        logger.info(f"Locally generated query_dsl (with vector integration): {json.dumps(query_dsl, indent=2, ensure_ascii=False)}")
+
+                        # Redact vector for logging
+                        query_dsl_for_log = copy.deepcopy(query_dsl)
+                        try:
+                            # The path to the vector is query_dsl["query"]["bool"]["must"][0]["knn"][DEFAULT_VECTOR_FIELD_NAME]["vector"]
+                            # generate_job_search_query structure might place knn directly in must if no other must clauses,
+                            # or it could be within a bool query. The provided generate_job_search_query seems to create a bool query.
+                            if query_dsl_for_log.get("query", {}).get("bool", {}).get("must"):
+                                must_clauses = query_dsl_for_log["query"]["bool"]["must"]
+                                if isinstance(must_clauses, list):
+                                    for clause in must_clauses:
+                                        if isinstance(clause, dict) and "knn" in clause:
+                                            knn_clause = clause.get("knn")
+                                            if isinstance(knn_clause, dict) and DEFAULT_VECTOR_FIELD_NAME in knn_clause:
+                                                if "vector" in knn_clause[DEFAULT_VECTOR_FIELD_NAME]:
+                                                    knn_clause[DEFAULT_VECTOR_FIELD_NAME]["vector"] = "[redacted due to length]"
+                                                    logger.debug(f"Redacted vector in KNN clause for field '{DEFAULT_VECTOR_FIELD_NAME}' for logging.")
+                                                break # Assuming only one knn clause with the target vector field
+                            # Check if the top level query is a KNN query (if no text_query and only vector)
+                            elif query_dsl_for_log.get("knn", {}).get(DEFAULT_VECTOR_FIELD_NAME, {}).get("vector"):
+                                query_dsl_for_log["knn"][DEFAULT_VECTOR_FIELD_NAME]["vector"] = "[redacted due to length]"
+                                logger.debug(f"Redacted vector in top-level KNN query for field '{DEFAULT_VECTOR_FIELD_NAME}' for logging.")
+
+                        except Exception as e_redact:
+                            logger.warning(f"Could not redact vector from query_dsl for logging: {e_redact}")
                         
-                        query_size = search_conditions.get("size", 10) 
+                        logger.info(f"Locally generated query_dsl (with vector integration): {json.dumps(query_dsl_for_log, indent=2, ensure_ascii=False)}")
+                        
+                        query_size = search_conditions.get("size", 10)
                         
                         logger.info(f"--- Calling 'opensearch_query_executor' tool on server ---")
                         executor_args = {
@@ -140,31 +167,80 @@ async def main(user_query: str, page_url: Optional[str]):
                         if job_results_text:
                             try:
                                 job_results_payload = json.loads(job_results_text)
-                                logger.info(f"Received payload from 'opensearch_query_executor': {json.dumps(job_results_payload, ensure_ascii=False, indent=2)}")
-                            except json.JSONDecodeError: logger.error(f"Failed to parse JSON from opensearch_query_executor: {job_results_text}")
+                                # The direct payload is logged by the new logic below if not None.
+                                # logger.info(f"Received payload from 'opensearch_query_executor': {json.dumps(job_results_payload, ensure_ascii=False, indent=2)}")
+                            except json.JSONDecodeError: 
+                                logger.error(f"Failed to parse JSON from opensearch_query_executor: {job_results_text}")
+                                job_results_payload = None # Ensure it's None if parsing fails
                         
-                        if isinstance(job_results_payload, list) and job_results_payload:
-                            first_job_doc = job_results_payload[0]
-                            if not isinstance(first_job_doc, dict) or not first_job_doc.get("error"):
-                                logger.info(f"--- Calling 'format_job_summary' for first result ---")
-                                summary_args = {"job_document": first_job_doc}
-                                call_fjs_result: types.CallToolResult = await session.call_tool("format_job_summary", summary_args) # type: ignore
+                        # --- New result processing logic ---
+                        if job_results_payload:
+                            logger.info(f"Processing {len(job_results_payload) if isinstance(job_results_payload, list) else 1} document(s) from opensearch_query_executor.")
+                            logger.debug(f"Full payload from opensearch_query_executor: {json.dumps(job_results_payload, ensure_ascii=False, indent=2)}")
+
+                            job_documents_to_summarize = job_results_payload if isinstance(job_results_payload, list) else [job_results_payload]
+
+                            if not job_documents_to_summarize:
+                                logger.info("No job documents returned from opensearch_query_executor.")
+                            else:
+                                all_summaries_text: List[str] = [] # Store all summaries
+                                processed_count = 0
+                                for doc_index, job_document in enumerate(job_documents_to_summarize):
+                                    if not isinstance(job_document, dict):
+                                        logger.warning(f"Item at index {doc_index} is not a dictionary, skipping: {job_document}")
+                                        continue
+                                    
+                                    if job_document.get("error"):
+                                        error_message = f"Document at index {doc_index} contains an error: {job_document.get('error')}"
+                                        logger.error(error_message)
+                                        all_summaries_text.append(f"Error for document {doc_index + 1}: {job_document.get('error')}")
+                                        continue 
+
+                                    # Assuming a valid job document has an '_id' or 'metadata' field
+                                    # The 'metadata' field is more common in the project's context for job postings.
+                                    # '_id' is a general OpenSearch field.
+                                    if '_id' not in job_document and 'metadata' not in job_document.get('metadata', {}): # Check nested metadata too
+                                        logger.warning(f"Document at index {doc_index} (ID: {job_document.get('_id', 'N/A')}) does not appear to be a valid job document, skipping summarization. Document: {job_document}")
+                                        continue
+                                        
+                                    logger.info(f"Summarizing job document {doc_index + 1}/{len(job_documents_to_summarize)} (ID: {job_document.get('_id', job_document.get('metadata', {}).get('BOARD_IDX', 'N/A'))})...")
+                                    try:
+                                        summary_args = {"job_document": job_document}
+                                        call_fjs_result: types.CallToolResult = await session.call_tool("format_job_summary", summary_args) # type: ignore
+                                        
+                                        summary_text_payload: Optional[str] = None
+                                        if call_fjs_result and call_fjs_result.content:
+                                            content_to_parse_fjs = None
+                                            if isinstance(call_fjs_result.content, list):
+                                                if call_fjs_result.content and isinstance(call_fjs_result.content[0], types.TextContent):
+                                                    content_to_parse_fjs = call_fjs_result.content[0]
+                                            elif isinstance(call_fjs_result.content, types.TextContent):
+                                                content_to_parse_fjs = call_fjs_result.content
+                                            
+                                            if content_to_parse_fjs: 
+                                                summary_text_payload = content_to_parse_fjs.text
+                                                all_summaries_text.append(f"Summary for job {doc_index + 1} (ID: {job_document.get('_id', job_document.get('metadata', {}).get('BOARD_IDX', 'N/A'))}):\n{summary_text_payload}")
+                                                logger.info(f"Summary for job {doc_index + 1}:\n{summary_text_payload}")
+                                                processed_count +=1
+                                            else: 
+                                                logger.warning(f"Could not extract TextContent from 'format_job_summary' for doc ID {job_document.get('_id', 'N/A')}. Full result: {call_fjs_result}")
+                                                all_summaries_text.append(f"Could not get summary for doc ID {job_document.get('_id', 'N/A')}")
+                                        else: 
+                                            logger.warning(f"No content in CallToolResult from 'format_job_summary' for doc ID {job_document.get('_id', 'N/A')}. Full result: {call_fjs_result}")
+                                            all_summaries_text.append(f"No summary content for doc ID {job_document.get('_id', 'N/A')}")
+
+                                    except Exception as e_summary:
+                                        error_msg = f"Error calling format_job_summary for document ID {job_document.get('_id', 'N/A')}: {e_summary}"
+                                        logger.error(error_msg)
+                                        all_summaries_text.append(error_msg)
                                 
-                                summary_text_payload: Optional[str] = None
-                                if call_fjs_result and call_fjs_result.content:
-                                    content_to_parse_fjs = None
-                                    if isinstance(call_fjs_result.content, list):
-                                        if call_fjs_result.content and isinstance(call_fjs_result.content[0], types.TextContent):
-                                            content_to_parse_fjs = call_fjs_result.content[0]
-                                    elif isinstance(call_fjs_result.content, types.TextContent):
-                                        content_to_parse_fjs = call_fjs_result.content
-                                    if content_to_parse_fjs: summary_text_payload = content_to_parse_fjs.text
-                                    else: logger.warning(f"Could not extract TextContent from 'format_job_summary'. Full result: {call_fjs_result}")
-                                else: logger.warning(f"No content in CallToolResult from 'format_job_summary'. Full result: {call_fjs_result}")
-                                if summary_text_payload is not None: logger.info(f"Job Summary:\n{summary_text_payload}")
-                        elif isinstance(job_results_payload, dict) and job_results_payload.get("error"):
-                             logger.warning(f"Search execution via 'opensearch_query_executor' returned an error: {job_results_payload['error']}")
-                        else: logger.info("No job results to summarize from 'opensearch_query_executor'.")
+                                if processed_count == 0 and not any("Error for document" in s for s in all_summaries_text):
+                                     logger.info("No valid job documents were found to summarize from the results.")
+                                elif all_summaries_text:
+                                    logger.info("\n--- All Processed Summaries/Errors ---\n" + "\n---\n".join(all_summaries_text))
+                        else:
+                            # This case handles if results_payload is None or empty (e.g. if tool itself failed or returned nothing)
+                            logger.info("No results payload received from 'opensearch_query_executor' to summarize.")
 
                     elif search_conditions and search_conditions.get("error"):
                         logger.error(f"Failed to generate search conditions on server: {search_conditions.get('error')}")

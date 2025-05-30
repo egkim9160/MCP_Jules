@@ -121,7 +121,14 @@ async def generate_search_conditions(raw_query: str, url_context: Optional[str] 
             user_profile_data = os_service.fetch_user_data_by_uid(uid) # This is a synchronous call
 
             if user_profile_data:
-                logger.info(f"Successfully fetched user profile data for UID '{uid}'.")
+                # Log the fetched user profile metadata
+                user_metadata_for_log = user_profile_data.get('metadata', {})
+                logger.info(f"Fetched user profile for UID '{uid}'. Metadata used for personalization: {user_metadata_for_log}")
+                
+                # The original log message about successful fetch can be kept or removed if the new one is sufficient.
+                # For clarity, let's assume the new one replaces the previous generic "Successfully fetched..." message.
+                # logger.info(f"Successfully fetched user profile data for UID '{uid}'.") # This line can be removed or kept. Let's remove for less verbose logs.
+
                 # Prepare semantic_query_parts for generate_user_preference_based_job_query
                 # Use existing semantic_text (derived from raw_query) as a base
                 semantic_query_parts_from_raw_query = [conditions["semantic_text"]] if conditions["semantic_text"] else []
@@ -139,18 +146,22 @@ async def generate_search_conditions(raw_query: str, url_context: Optional[str] 
                         logger.info(f"Filters from user profile: {user_personalized_components['filters']}")
                         conditions["filters"].update(user_personalized_components["filters"])
                         logger.info(f"Merged filters: {conditions['filters']}")
+                    
+                    # Refined semantic text combination
+                    original_semantic_text_from_raw_query = conditions["semantic_text"].strip() # Already initialized from raw_query
+                    user_derived_semantic_text = user_personalized_components.get("semantic_text", "").strip()
 
-                    # Update semantic text (concatenate)
-                    if user_personalized_components.get("semantic_text"):
-                        logger.info(f"Original semantic_text: '{conditions['semantic_text']}'")
-                        logger.info(f"Semantic text from user profile: '{user_personalized_components['semantic_text']}'")
-                        # Concatenate if both exist, otherwise take the one that exists
-                        if conditions["semantic_text"] and user_personalized_components['semantic_text']:
-                            conditions["semantic_text"] = f"{conditions['semantic_text']} {user_personalized_components['semantic_text']}".strip()
-                        elif user_personalized_components['semantic_text']:
-                             conditions["semantic_text"] = user_personalized_components['semantic_text'].strip()
-                        # If only original semantic_text exists, it's already set.
-                        logger.info(f"Updated semantic_text: '{conditions['semantic_text']}'")
+                    if not user_derived_semantic_text or user_derived_semantic_text == original_semantic_text_from_raw_query:
+                        logger.info(f"User profile semantic content ('{user_derived_semantic_text}') is similar to or derived from raw query ('{original_semantic_text_from_raw_query}'); using original semantic text.")
+                        # conditions["semantic_text"] remains original_semantic_text_from_raw_query (already set and stripped)
+                        conditions["semantic_text"] = original_semantic_text_from_raw_query # Ensure it's the stripped version
+                    else:
+                        logger.info(f"Augmenting semantic text with user profile keywords. Original: '{original_semantic_text_from_raw_query}', User-derived: '{user_derived_semantic_text}'")
+                        if original_semantic_text_from_raw_query: # Avoid leading space if original is empty
+                            conditions["semantic_text"] = f"{original_semantic_text_from_raw_query} {user_derived_semantic_text}".strip()
+                        else:
+                            conditions["semantic_text"] = user_derived_semantic_text
+                        logger.info(f"Final combined semantic_text: '{conditions['semantic_text']}'")
                     
                     conditions["personalization_applied"] = True
                     logger.info(f"Personalization applied for UID '{uid}'.")
