@@ -57,8 +57,14 @@ async def main(user_query: str, page_url: Optional[str]):
                     # (Tool listing logic can be kept or commented out)
 
                     logger.info(f"--- Calling 'generate_search_conditions' tool on server ---")
-                    conditions_args = {"raw_query": user_query}
-                    if page_url: conditions_args["url_context"] = page_url
+                    conditions_args: Dict[str, Any] = {"raw_query": user_query}
+                    if page_url: 
+                        conditions_args["url_context"] = page_url
+                    
+                    # Access the uid from the global args parsed in __main__
+                    if hasattr(args, 'uid') and args.uid:
+                        conditions_args["uid"] = args.uid
+                        logger.info(f"Using UID: {args.uid} for personalized search conditions.")
                     
                     call_gsc_result: types.CallToolResult = await session.call_tool("generate_search_conditions", conditions_args) # type: ignore
                     
@@ -184,5 +190,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MCP Test Client for Job Portal Server")
     parser.add_argument("--query", type=str, required=True, help="The natural language query for the agent.")
     parser.add_argument("--url", type=str, required=False, default=None, help="Optional: The URL of the page context (e.g., a specific job posting).")
+    parser.add_argument("--uid", type=str, default=None, help="User ID for personalized search.") # Added UID argument
+    
+    global args # Make args global so main can access it
     args = parser.parse_args()
+    
     asyncio.run(main(user_query=args.query, page_url=args.url))

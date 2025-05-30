@@ -209,5 +209,128 @@ class TestMCPServerTools(unittest.TestCase):
         # NLU might have tried to set location to 서울, but user's 부산 should win.
         self.assertEqual(conditions.get("filters"), expected_filters)
 
+    # --- Tests for opensearch_query_executor ---
+
+    def _run_opensearch_executor_test(self, input_dsl, expected_dsl_after_source_mod, size=None):
+        """Helper to run opensearch_query_executor tests."""
+        self.mock_os_service.execute_query.return_value = [{"some_result": "dummy"}] # Mock return value
+        self.mock_os_service.is_connected.return_value = True # Assume connected
+
+        # Make a copy for the tool to modify, as it modifies in-place
+        dsl_to_pass = input_dsl.copy() if input_dsl is not None else None
+
+        self.run_async(mcp_job_portal_server.opensearch_query_executor(
+            index_name="test_index", 
+            query_dsl=dsl_to_pass, # type: ignore
+            size=size
+        ))
+        
+        self.mock_os_service.execute_query.assert_called_once()
+        args, kwargs = self.mock_os_service.execute_query.call_args
+        
+        # The query_dsl passed to execute_query is what we need to check
+        called_with_query = kwargs.get("query")
+
+        # Add size to expected_dsl if it was passed to the tool
+        if size is not None and expected_dsl_after_source_mod is not None:
+            expected_dsl_after_source_mod_with_size = expected_dsl_after_source_mod.copy()
+            expected_dsl_after_source_mod_with_size["size"] = size
+        else:
+            expected_dsl_after_source_mod_with_size = expected_dsl_after_source_mod
+
+        self.assertEqual(called_with_query, expected_dsl_after_source_mod_with_size)
+        return called_with_query # Return the actual query passed to execute_query for further specific asserts if needed
+
+    def test_executor_no_source_key(self):
+        test_dsl = {"query": {"match_all": {}}}
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    def test_executor_empty_source_dict(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": {}}
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    def test_executor_source_with_includes(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": {"includes": ["field_a", "field_b"]}}
+        # According to the implemented logic, "excludes" should be added.
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"includes": ["field_a", "field_b"], "excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        
+    def test_executor_source_with_other_excludes(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["other_field"]}}
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["other_field", "vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    def test_executor_source_with_vector_field_already_excluded(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field", "other_field"]}}
+        # Expected: no change to the excludes list if vector_field is already there.
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field", "other_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        
+    def test_executor_source_with_vector_field_already_excluded_single(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    def test_executor_source_true(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": True}
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    def test_executor_source_false(self):
+        test_dsl = {"query": {"match_all": {}}, "_source": False}
+        expected_dsl = {"query": {"match_all": {}}, "_source": False} # Stays false
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+
+    @patch('mcp_job_portal_server.logger.warning')
+    def test_executor_source_include_list(self, mock_log_warning):
+        test_dsl = {"query": {"match_all": {}}, "_source": ["field_a", "field_b"]}
+        expected_dsl = {"query": {"match_all": {}}, "_source": ["field_a", "field_b"]} # Unchanged
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        mock_log_warning.assert_called_once_with(
+            "Cannot apply 'vector_field' exclusion: '_source' is an include list. Modifying it could override explicit field selection. Query DSL not modified for _source."
+        )
+
+    @patch('mcp_job_portal_server.logger.warning')
+    def test_executor_source_string_pattern(self, mock_log_warning):
+        test_dsl = {"query": {"match_all": {}}, "_source": "*.field_pattern"}
+        expected_dsl = {"query": {"match_all": {}}, "_source": "*.field_pattern"} # Unchanged
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        mock_log_warning.assert_called_once_with(
+            "Cannot apply 'vector_field' exclusion: '_source' is a string pattern ('*.field_pattern'). Modifying it could override explicit field selection. Query DSL not modified for _source."
+        )
+        
+    def test_executor_with_size_parameter(self):
+        test_dsl = {"query": {"match_all": {}}}
+        # Expected DSL after _source modification (size is handled by the helper)
+        expected_dsl_after_source_mod = {"query": {"match_all": {}}, "_source": {"excludes": ["vector_field"]}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl_after_source_mod, size=50)
+        
+        # Further check on the size parameter in the final DSL passed to execute_query
+        args, kwargs = self.mock_os_service.execute_query.call_args
+        called_with_query = kwargs.get("query")
+        self.assertEqual(called_with_query.get("size"), 50)
+
+    @patch('mcp_job_portal_server.logger.warning')
+    def test_executor_source_dict_excludes_not_list(self, mock_log_warning):
+        test_dsl = {"query": {"match_all": {}}, "_source": {"excludes": "not_a_list_oops"}}
+        # Expected: DSL remains unchanged because 'excludes' is not a list
+        expected_dsl = {"query": {"match_all": {}}, "_source": {"excludes": "not_a_list_oops"}}
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        mock_log_warning.assert_called_once_with(
+            "Cannot apply 'vector_field' exclusion: '_source.excludes' is not a list. Current value: not_a_list_oops"
+        )
+
+    @patch('mcp_job_portal_server.logger.warning')
+    def test_executor_source_unexpected_type(self, mock_log_warning):
+        test_dsl = {"query": {"match_all": {}}, "_source": 12345} # An integer, which is unexpected
+        expected_dsl = {"query": {"match_all": {}}, "_source": 12345} # Unchanged
+        self._run_opensearch_executor_test(test_dsl, expected_dsl)
+        mock_log_warning.assert_called_once_with(
+            "Cannot apply 'vector_field' exclusion: '_source' is of an unexpected type ('<class 'int'>'). Query DSL not modified for _source."
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

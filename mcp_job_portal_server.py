@@ -40,16 +40,62 @@ KNOWN_ORG_TYPES = ["상급종합병원", "종합병원", "병원", "의원", "�
 @mcp.tool(description="Executes a raw OpenSearch Query DSL against a specified index.")
 async def opensearch_query_executor(index_name: str, query_dsl: Dict[str, Any], size: Optional[int] = None) -> List[Dict[str, Any]]:
     logger.info(f"Tool 'opensearch_query_executor' called for index: '{index_name}', size: {size}")
-    logger.debug(f"Query DSL: {json.dumps(query_dsl, indent=2)}")
+    original_query_dsl_for_debug = json.dumps(query_dsl, indent=2) # For logging original
+    logger.debug(f"Original Query DSL: {original_query_dsl_for_debug}")
+
     if not os_service.is_connected():
         return [{"error": "OpenSearch service is not connected."}]
+
+    # Logic to modify _source to exclude "vector_field"
+    vector_field_to_exclude = "vector_field"
+    modified_source = False
+
+    if "_source" not in query_dsl:
+        query_dsl["_source"] = {"excludes": [vector_field_to_exclude]}
+        logger.info(f"Applied '{vector_field_to_exclude}' exclusion: No existing '_source' key, added new one.")
+        modified_source = True
+    else:
+        source_config = query_dsl["_source"]
+        if isinstance(source_config, dict):
+            if "excludes" in source_config:
+                if isinstance(source_config["excludes"], list):
+                    if vector_field_to_exclude not in source_config["excludes"]:
+                        source_config["excludes"].append(vector_field_to_exclude)
+                        logger.info(f"Applied '{vector_field_to_exclude}' exclusion: Appended to existing 'excludes' list.")
+                        modified_source = True
+                    else:
+                        logger.info(f"'{vector_field_to_exclude}' exclusion: Already present in 'excludes' list.")
+                else:
+                    # excludes is not a list, this is unusual. Log and don't modify.
+                    logger.warning(f"Cannot apply '{vector_field_to_exclude}' exclusion: '_source.excludes' is not a list. Current value: {source_config['excludes']}")
+            else: # No "excludes" key in _source dictionary
+                source_config["excludes"] = [vector_field_to_exclude]
+                logger.info(f"Applied '{vector_field_to_exclude}' exclusion: Added 'excludes' key to existing '_source' dict.")
+                modified_source = True
+        elif isinstance(source_config, list):
+            logger.warning(f"Cannot apply '{vector_field_to_exclude}' exclusion: '_source' is an include list. Modifying it could override explicit field selection. Query DSL not modified for _source.")
+        elif isinstance(source_config, bool):
+            if source_config is True:
+                query_dsl["_source"] = {"excludes": [vector_field_to_exclude]}
+                logger.info(f"Applied '{vector_field_to_exclude}' exclusion: Changed '_source: true' to exclude config.")
+                modified_source = True
+            else: # _source is False
+                logger.info(f"No action for '{vector_field_to_exclude}' exclusion: '_source' is already false.")
+        elif isinstance(source_config, str):
+            logger.warning(f"Cannot apply '{vector_field_to_exclude}' exclusion: '_source' is a string pattern ('{source_config}'). Modifying it could override explicit field selection. Query DSL not modified for _source.")
+        else:
+            logger.warning(f"Cannot apply '{vector_field_to_exclude}' exclusion: '_source' is of an unexpected type ('{type(source_config)}'). Query DSL not modified for _source.")
+
+    if modified_source:
+        logger.debug(f"Modified Query DSL after _source processing: {json.dumps(query_dsl, indent=2)}")
+    
     try:
         if size is not None:
             query_dsl['size'] = size
         
-        results = os_service.execute_query(index_name=index_name, query=query_dsl)
+        results = os_service.execute_query(index_name=index_name, query=query_dsl) # execute_query itself also excludes "vector_field" by default now. This tool-level modification makes it explicit for direct DSL calls.
         if not results:
-            logger.warning(f"No results from opensearch_query_executor for index '{index_name}'. Query: {json.dumps(query_dsl)}")
+            logger.warning(f"No results from opensearch_query_executor for index '{index_name}'. Query (after potential _source mod): {json.dumps(query_dsl)}")
         return results
     except Exception as e:
         logger.error(f"Exception in opensearch_query_executor: {e}")
