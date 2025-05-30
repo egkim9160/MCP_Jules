@@ -99,15 +99,19 @@ def generate_job_search_query(
 #  generate_similar_users_query, and generate_similar_job_query remain unchanged)
 # Make sure they are present in the actual file if they were there before.
 
-# Updated mapping based on the new user_profile structure from resume_text-embedding-3-large...
-# Assumes user preference fields are within user_profile["metadata"]
+# Updated mapping based on actual field names observed in user profile metadata.
+# Keys are field names from user_profile.metadata, values are target filter keys for job search.
 USER_TO_JOB_FILTER_MAP = {
-    "metadata.USER_DESIRED_LOCATION": "location",
-    "metadata.USER_EMPLOYMENT_TYPE": "employment_type",
-    "metadata.USER_SPECIALTY": "specialty",
+    "SPECIALTY": "specialty",          # User's specialty, e.g., '산부인과'
+    "WORK_TYPE": "employment_type",    # User's work type, e.g., '교직'
+    "OFFICE_ADDR_REGION": "location",  # Extracted region from user's OFFICE_ADDR
+    # Add other direct mappings here if available and desired, e.g.:
+    # "USER_DESIRED_SALARY_MIN": "salary_min", # If user profile has such a field
 }
 
-# USER_SEMANTIC_FIELDS is no longer needed as skills will be accessed directly.
+# Name of the field in user_profile.metadata that contains skills.
+# If not present in the example log for gabrielle83, this will extract nothing for her.
+USER_SKILLS_FIELD_NAME_IN_PROFILE = "USER_SKILLS" # Or "SKILLS" if that's the actual field name
 
 def generate_user_profile_query(user_id: str) -> dict:
     # This function is assumed to be for a different user index/schema or purpose.
@@ -120,45 +124,39 @@ def generate_user_preference_based_job_query(user_profile: dict, semantic_query_
 
     user_metadata = user_profile.get("metadata", {})
 
-    # Populate filters based on USER_TO_JOB_FILTER_MAP
-    # Example for specialty:
-    # user_profile structure: {"metadata": {"USER_SPECIALTY": "Cardiology"}}
-    # USER_TO_JOB_FILTER_MAP: {"metadata.USER_SPECIALTY": "specialty"}
-    # Resulting filters: {"specialty": "Cardiology"}
-    
-    user_specialty_key_in_map = "metadata.USER_SPECIALTY"
-    user_specialty_field_in_profile = "USER_SPECIALTY" # Actual field name in user_profile.metadata
-    if user_specialty_key_in_map in USER_TO_JOB_FILTER_MAP:
-        user_specialty_value = user_metadata.get(user_specialty_field_in_profile)
-        if user_specialty_value:
-            filters[USER_TO_JOB_FILTER_MAP[user_specialty_key_in_map]] = user_specialty_value
+    for user_profile_key, job_filter_key in USER_TO_JOB_FILTER_MAP.items():
+        user_value = None
+        if user_profile_key == "OFFICE_ADDR_REGION":
+            full_address = user_metadata.get("OFFICE_ADDR")
+            if full_address and isinstance(full_address, str):
+                # Simple extraction: take the first part of the address (e.g., "경기도")
+                # This is a naive approach and might need refinement for robustness.
+                user_value = full_address.split(" ")[0]
+                if user_value:
+                    print(f"Info: Extracted region '{user_value}' from OFFICE_ADDR for location filter.")
+        else:
+            user_value = user_metadata.get(user_profile_key)
 
-    user_location_key_in_map = "metadata.USER_DESIRED_LOCATION"
-    user_location_field_in_profile = "USER_DESIRED_LOCATION"
-    if user_location_key_in_map in USER_TO_JOB_FILTER_MAP:
-        user_location_value = user_metadata.get(user_location_field_in_profile)
-        if user_location_value:
-            filters[USER_TO_JOB_FILTER_MAP[user_location_key_in_map]] = user_location_value
-            
-    user_emp_type_key_in_map = "metadata.USER_EMPLOYMENT_TYPE"
-    user_emp_type_field_in_profile = "USER_EMPLOYMENT_TYPE"
-    if user_emp_type_key_in_map in USER_TO_JOB_FILTER_MAP:
-        user_emp_type_value = user_metadata.get(user_emp_type_field_in_profile)
-        if user_emp_type_value:
-            filters[USER_TO_JOB_FILTER_MAP[user_emp_type_key_in_map]] = user_emp_type_value
+        if user_value:
+            filters[job_filter_key] = user_value
+            print(f"Info: Applied filter from user profile: {job_filter_key} = {user_value}")
+        else:
+            print(f"Info: No value found in user profile for '{user_profile_key}' (maps to job filter '{job_filter_key}').")
+
 
     # Handle user skills for semantic text
-    # Assumed structure: user_profile = {"metadata": {"USER_SKILLS": ["skill1", "skill2"] or "skill string"}}
-    user_skills_field_in_profile = "USER_SKILLS"
-    user_skills = user_metadata.get(user_skills_field_in_profile)
+    # Correctly use the constant and provide a default empty list
+    user_skills = user_metadata.get(USER_SKILLS_FIELD_NAME_IN_PROFILE, []) 
+    # Removed the erroneous line: user_skills = user_metadata.get(user_skills_field_in_profile)
     
-    if user_skills:
+    if user_skills: # user_skills will be an empty list if key not found, so this check is fine.
         if isinstance(user_skills, list):
             current_semantic_texts.extend(user_skills)
         elif isinstance(user_skills, str):
             current_semantic_texts.append(user_skills)
         else:
-            print(f"Warning: User skills field '{user_skills_field_in_profile}' is neither a list nor a string. Skills not added.")
+            # Correctly use the constant in the warning message
+            print(f"Warning: User skills field '{USER_SKILLS_FIELD_NAME_IN_PROFILE}' is neither a list nor a string. Skills not added.")
             
     # Remove duplicates while preserving order (Python 3.7+)
     current_semantic_texts = list(dict.fromkeys(current_semantic_texts))

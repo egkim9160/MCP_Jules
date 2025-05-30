@@ -119,5 +119,63 @@ class TestQueryGenerators(unittest.TestCase):
         self.assertEqual(result['filters'], {})
         self.assertEqual(result['semantic_text'], "")
 
+    def test_generate_user_preference_filters_with_actual_profile_fields(self):
+        # This test uses the updated USER_TO_JOB_FILTER_MAP and logic
+        # that directly uses field names from user_profile.metadata
+        sample_user_profile = {
+            "metadata": {
+                "U_ID": "gabrielle83",
+                "SPECIALTY": "산부인과",      # Expected to map to filters["specialty"]
+                "WORK_TYPE": "교직",        # Expected to map to filters["employment_type"]
+                "OFFICE_ADDR": "경기도 부천시 소사로 327", # Expected to map to filters["location"] as "경기도"
+                "USER_NAME": "김지영",      # Not currently mapped
+                "USER_SKILLS": ["routine checkup", "delivery"] # Test skills as well
+            }
+        }
+        semantic_query_parts = ["doctor looking for work"] # Initial semantic parts
+
+        result = generate_user_preference_based_job_query(sample_user_profile, semantic_query_parts)
+
+        expected_filters = {
+            "specialty": "산부인과",
+            "employment_type": "교직",
+            "location": "경기도" 
+        }
+        self.assertEqual(result['filters'], expected_filters)
+
+        # Verify semantic text (initial parts + skills from profile)
+        self.assertIn("doctor looking for work", result['semantic_text'])
+        self.assertIn("routine checkup", result['semantic_text'])
+        self.assertIn("delivery", result['semantic_text'])
+        
+        # Check combined string parts more robustly
+        combined_parts = result['semantic_text'].split()
+        self.assertTrue(all(p in combined_parts for p in ["doctor", "looking", "for", "work", "routine", "checkup", "delivery"]))
+
+    def test_generate_user_preference_filters_addr_only_one_part(self):
+        # Test if OFFICE_ADDR has only one part (e.g., "서울")
+        sample_user_profile = {
+            "metadata": {
+                "OFFICE_ADDR": "서울", 
+            }
+        }
+        result = generate_user_preference_based_job_query(sample_user_profile, [])
+        expected_filters = {"location": "서울"}
+        self.assertEqual(result['filters'], expected_filters)
+        self.assertEqual(result['semantic_text'], "") # No skills, no initial parts
+
+    def test_generate_user_preference_filters_empty_addr(self):
+        # Test if OFFICE_ADDR is empty
+        sample_user_profile = {
+            "metadata": {
+                "OFFICE_ADDR": "", 
+                "SPECIALTY": "일반의"
+            }
+        }
+        result = generate_user_preference_based_job_query(sample_user_profile, [])
+        # Location filter should not be added if address is empty
+        expected_filters = {"specialty": "일반의"}
+        self.assertEqual(result['filters'], expected_filters)
+
 if __name__ == '__main__':
     unittest.main()

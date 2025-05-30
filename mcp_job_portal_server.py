@@ -237,9 +237,30 @@ async def generate_search_conditions(raw_query: str, url_context: Optional[str] 
 
 @mcp.tool(description="Formats a single job document into a user-friendly text summary.")
 async def format_job_summary(job_document: Dict[str, Any]) -> str: 
-    logger.info(f"Tool 'format_job_summary' called for document: {job_document.get(JOB_FIELD_MAP.get('board_id', '_id'))}")
-    if not job_document:
+    # INFO logs to inspect the received job_document (changed from DEBUG)
+    logger.info(f"format_job_summary raw received job_document type: {type(job_document)}")
+    try:
+        # Attempt to convert to string for logging, truncate if very long
+        job_doc_str_repr = str(job_document)
+        logger.info(f"format_job_summary raw received job_document content (first 500 chars): {job_doc_str_repr[:500]}")
+    except Exception as e_str_conv:
+        logger.info(f"format_job_summary: Could not convert job_document to string for full content logging: {e_str_conv}")
+
+    logger.info(f"format_job_summary received job_document keys: {list(job_document.keys()) if isinstance(job_document, dict) else 'Not a dict or None'}")
+
+    # The original INFO log for the tool call, can be kept or removed if too verbose with new debug logs.
+    # Let's keep it for now as it logs a specific ID which is useful.
+    # logger.info(f"Tool 'format_job_summary' called for document ID: {job_document.get(JOB_FIELD_MAP.get('board_id', '_id'), 'N/A') if isinstance(job_document, dict) else 'N/A'}")
+    # Decided to comment out the original specific ID log, as the content/keys log above is now INFO and more comprehensive for this debugging purpose.
+
+    if not job_document: # This check handles if job_document is None
+        logger.warning("format_job_summary received a None or empty job_document.")
         return "Error: No job document provided for summarization."
+    
+    if not isinstance(job_document, dict):
+        logger.warning(f"format_job_summary received job_document of type {type(job_document)}, expected dict. Returning error.")
+        return "Error: Invalid job document format received for summarization."
+
     try:
         summary_points = [
             f"Title: {job_document.get(JOB_FIELD_MAP.get('title'), 'N/A')}",

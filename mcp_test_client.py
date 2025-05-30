@@ -97,7 +97,7 @@ async def main(user_query: str, page_url: Optional[str]):
                             logger.info(f"Attempting to generate embedding for text: '{semantic_text_for_embedding}'")
                             try:
                                 embeddings_model = OpenAIEmbeddings(
-                                    model="text-embedding-3-large",
+                                    model="text-embedding-3-small", # Changed to small model
                                     request_timeout=30
                                 )
                                 query_vector = embeddings_model.embed_query(semantic_text_for_embedding)
@@ -175,8 +175,10 @@ async def main(user_query: str, page_url: Optional[str]):
                         
                         # --- New result processing logic ---
                         if job_results_payload:
+                            # Log the entire raw payload at INFO level
+                            logger.info(f"Raw results_payload from opensearch_query_executor: {json.dumps(job_results_payload, indent=2, ensure_ascii=False)}")
                             logger.info(f"Processing {len(job_results_payload) if isinstance(job_results_payload, list) else 1} document(s) from opensearch_query_executor.")
-                            logger.debug(f"Full payload from opensearch_query_executor: {json.dumps(job_results_payload, ensure_ascii=False, indent=2)}")
+                            # logger.debug(f"Full payload from opensearch_query_executor: {json.dumps(job_results_payload, ensure_ascii=False, indent=2)}") # Kept as debug if needed, info above is more direct
 
                             job_documents_to_summarize = job_results_payload if isinstance(job_results_payload, list) else [job_results_payload]
 
@@ -204,6 +206,24 @@ async def main(user_query: str, page_url: Optional[str]):
                                         continue
                                         
                                     logger.info(f"Summarizing job document {doc_index + 1}/{len(job_documents_to_summarize)} (ID: {job_document.get('_id', job_document.get('metadata', {}).get('BOARD_IDX', 'N/A'))})...")
+                                    
+                                    # Detailed log before calling the tool
+                                    logger.info(f"Attempting to summarize this document (type: {type(job_document)}): {json.dumps(job_document, indent=2, ensure_ascii=False)}")
+                                    # The debug logs below can be kept for more detailed type/serialization checks if needed,
+                                    # or removed if the above INFO log is sufficient. For now, let's keep them as debug.
+                                    logger.debug(f"Type of job_document for format_job_summary (re-check): {type(job_document)}")
+                                    try:
+                                        # This serialization is mainly for the debug log below if the INFO one was too verbose or failed.
+                                        job_doc_json_for_debug = json.dumps(job_document, ensure_ascii=False) # No indent for debug if brief
+                                        if len(job_doc_json_for_debug) > 200 : # Only log part if it's very long for debug
+                                             logger.debug(f"Brief content of job_document for format_job_summary (first 200 chars): {job_doc_json_for_debug[:200]}...")
+                                        else:
+                                             logger.debug(f"Brief content of job_document for format_job_summary: {job_doc_json_for_debug}")
+                                    except TypeError as te:
+                                        logger.error(f"job_document for format_job_summary is not JSON serializable (debug check): {te}")
+                                        if isinstance(job_document, dict):
+                                            logger.debug(f"Keys in job_document (debug check): {list(job_document.keys())}")
+                                    
                                     try:
                                         summary_args = {"job_document": job_document}
                                         call_fjs_result: types.CallToolResult = await session.call_tool("format_job_summary", summary_args) # type: ignore
