@@ -25,7 +25,7 @@ logger = logging.getLogger('mcp_test_client')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 SERVER_SCRIPT_PATH = Path(__file__).parent / "mcp_job_portal_server.py"
-JOB_INDEX_NAME_CLIENT = "job_postings_alias" 
+JOB_INDEX_NAME_CLIENT = "recruit_text-embedding-3-small_1536_100000_300_20250529_150924" # Updated to user's actual index name
 # This should match the field name used in the OpenSearch index mapping for KNN search
 DEFAULT_VECTOR_FIELD_NAME = "vector_field" # Changed as per user instruction
 

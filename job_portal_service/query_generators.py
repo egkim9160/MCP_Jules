@@ -1,54 +1,40 @@
 # job_portal_service/query_generators.py
 import re 
-from typing import Optional, List, Dict, Any # Ensure these are imported
+from typing import Optional, List, Dict, Any 
 
-# JOB_FIELD_MAP definition (ensure it's complete and accurate as per previous steps)
 JOB_FIELD_MAP = {
-    "board_id": "JDC.BOARD_IDX",
-    "title": "JDC.TITLE",
-    "content_semantic": "JDC.CLEAN_CONTENT", 
-    "specialty": "JS.SPECIALTIES", 
-    "salary_min": "JDC.PAY_DETAILS", 
-    "salary_max": "JDC.PAY_DETAILS", 
-    "location": "JDC.REGION_NAME", 
-    "organization_name": "JDC.ORGANIZATION_NAME",
-    "org_type": "JDC.ORG_TYPE_NAME",
-    "night_work": "JDC.NIGHT_WORK_STATUS", 
-    "weekend_work": "JDC.WEEKEND_WORK_STATUS", 
-    "holiday_work": "JDC.H_WORK_STATUS", 
-    "employment_type": "JDC.REGULAR_STATUS", 
-    # Add other fields as needed, e.g., the vector field name if it's static
-    # "vector_field": "your_actual_vector_field_name_in_opensearch" # Example
+    "board_id": "metadata.BOARD_IDX", "title": "metadata.TITLE", 
+    "specialty": "metadata.SPECIALTIES", "salary_min": "metadata.PAY_DETAILS", 
+    "salary_max": "metadata.PAY_DETAILS", "pay_details_text": "metadata.PAY_DETAILS", 
+    "location": "metadata.REGION_NAME", "organization_name": "metadata.ORGANIZATION_NAME",
+    "org_type": "metadata.ORG_TYPE_NAME", "night_work": "metadata.NIGHT_WORK_STATUS", 
+    "weekend_work": "metadata.WEEKEND_WORK_STATUS", "holiday_work": "metadata.H_WORK_STATUS", 
+    "employment_type": "metadata.REGULAR_STATUS", "nego_status": "metadata.NEGO_STATUS", 
+    "incentive_status": "metadata.INCENTIVE_STATUS", "work_hour_details": "metadata.WORK_HOUR_DETAILS", 
+    "s_work_status": "metadata.S_WORK_STATUS", "labor_law_status": "metadata.LABOR_LAW_STATUS",
+    "meal_house_status": "metadata.MEAL_HOUSE_STATUS", "attend_status": "metadata.ATTEND_STATUS",
+    "insu_status": "metadata.INSU_STATUS", "address": "metadata.ADDRESS",
+    "job_reg_date": "metadata.JOB_REG_DATE", "content_semantic": "text", 
 }
 
-# --- generate_job_search_query function ---
 def generate_job_search_query(
-    text_query: str, 
+    text_query: str,  # Original raw query, used for fallback text search if no vector
     filters: dict,
     query_vector: Optional[List[float]] = None, 
     vector_field_name: Optional[str] = None, 
     default_knn_k: int = 10 
 ) -> dict:
-    """
-    Generates an OpenSearch search query.
-    Supports hybrid search (vector KNN + metadata filters) if query_vector is provided.
-    Falls back to text match + metadata filters otherwise.
-    Salary filters are currently excluded.
-    """
-    
     bool_query_parts: Dict[str, List[Dict[str, Any]]] = {
         "must": [],
         "filter": [],
-        "should": [], # Not used in current logic but good to have for future
-        "must_not": [] # Not used in current logic
+        "should": [],
+        "must_not": []
     }
     
     # 1. Metadata Filters (excluding salary)
-    # These field names come directly from OpenSearch mapping, not the simple filter keys
     salary_os_fields = []
     if JOB_FIELD_MAP.get("salary_min"): salary_os_fields.append(JOB_FIELD_MAP["salary_min"])
     if JOB_FIELD_MAP.get("salary_max"): salary_os_fields.append(JOB_FIELD_MAP["salary_max"])
-    # Remove duplicates if salary_min and salary_max map to the same OS field
     salary_os_fields = list(set(salary_os_fields)) 
     
     for key, value in filters.items():
@@ -58,30 +44,21 @@ def generate_job_search_query(
         
         field_name = JOB_FIELD_MAP[key]
         
-        if field_name in salary_os_fields: # Check against the OpenSearch field name
-            print(f"Info (generate_job_search_query): Salary filter for '{key}' (maps to OS field '{field_name}') is being skipped as per current configuration.")
+        if field_name in salary_os_fields: 
+            print(f"Info (generate_job_search_query): Salary filter for '{key}' (maps to OS field '{field_name}') is being skipped.")
             continue 
 
-        if key in ["night_work", "weekend_work"]: 
-            bool_query_parts["filter"].append({"term": {field_name: str(value).upper()}})
-        elif key in ["specialty", "location", "org_type"]: 
+        if key in ["specialty", "location", "org_type", "employment_type", "organization_name", "title", "work_hour_details", "pay_details_text", "address"]:
              bool_query_parts["filter"].append({"match": {field_name: value}})
+        elif key in ["night_work", "weekend_work", "s_work_status", "nego_status", "incentive_status", "labor_law_status", "meal_house_status", "attend_status", "insu_status", "holiday_work"]:
+            bool_query_parts["filter"].append({"term": {field_name: str(value).upper() if isinstance(value, str) else value }})
         else: 
             bool_query_parts["filter"].append({"term": {field_name: value}})
 
-    # 2. Semantic Search Part (Vector KNN or Text Match)
-    meaningful_text_query = ""
-    if text_query and text_query.strip():
-        temp_text_query = text_query
-        common_leftovers = ["공고만 보고 싶어", "공고만 보여줘", "만 보고 싶어", "만 보여줘", "보고 싶어", "보여줘", "찾아줘", "알려줘"]
-        # Remove common trailing phrases that don't add semantic value
-        for phrase in common_leftovers:
-            if temp_text_query.endswith(phrase):
-                temp_text_query = temp_text_query[:-len(phrase)].strip()
-        if temp_text_query and not temp_text_query.isdigit(): # Avoid using if only digits remain
-            meaningful_text_query = temp_text_query
-
+    # 2. Semantic Search Part
     if query_vector and vector_field_name:
+        # If vector is provided, use KNN as the primary semantic search component.
+        # The text_query (original raw query) is NOT used for an additional "match" query here.
         knn_clause = {
             "knn": {
                 vector_field_name: {
@@ -91,13 +68,21 @@ def generate_job_search_query(
             }
         }
         bool_query_parts["must"].append(knn_clause)
-        
-        # If meaningful_text_query also exists, add it for hybrid keyword + vector search
-        if meaningful_text_query:
-            bool_query_parts["must"].append({"match": {JOB_FIELD_MAP["content_semantic"]: meaningful_text_query}})
+        print("Info (generate_job_search_query): Vector search active. Semantic matching via KNN.")
                 
-    elif meaningful_text_query: # Fallback to text match if no vector but meaningful text exists
-        bool_query_parts["must"].append({"match": {JOB_FIELD_MAP["content_semantic"]: meaningful_text_query}})
+    elif text_query and text_query.strip(): # Fallback to text match if no vector
+        meaningful_text_query = text_query
+        common_leftovers = ["공고만 보고 싶어", "공고만 보여줘", "만 보고 싶어", "만 보여줘", "보고 싶어", "보여줘", "찾아줘", "알려줘"]
+        for phrase in common_leftovers: 
+            meaningful_text_query = meaningful_text_query.replace(phrase, "").strip()
+        meaningful_text_query = re.sub(r'\s+', ' ', meaningful_text_query).strip() 
+
+        if meaningful_text_query and not meaningful_text_query.isdigit():
+            # Use the JOB_FIELD_MAP["content_semantic"] which should map to "text" (the concatenated field)
+            bool_query_parts["must"].append({"match": {JOB_FIELD_MAP["content_semantic"]: meaningful_text_query}})
+            print(f"Info (generate_job_search_query): Fallback text search active on '{JOB_FIELD_MAP['content_semantic']}' with: '{meaningful_text_query}'")
+        else:
+            print(f"Info (generate_job_search_query): No vector and no meaningful text_query ('{text_query}') for content_semantic match.")
 
     # Construct final query
     final_query_bool: Dict[str, Any] = {}
@@ -105,14 +90,14 @@ def generate_job_search_query(
         if clauses:
             final_query_bool[part_name] = clauses
             
-    if not final_query_bool: # If bool is empty (no filters, no semantic search part)
-        return {"query": {"match_all": {}}} # Match all documents
+    if not final_query_bool: 
+        return {"query": {"match_all": {}}} 
     else:
         return {"query": {"bool": final_query_bool}}
 
-
-# --- generate_user_profile_query function ---
-# (Keep existing definition from query_generators.py)
+# (Other functions like generate_user_profile_query, generate_user_preference_based_job_query, 
+#  generate_similar_users_query, and generate_similar_job_query remain unchanged)
+# Make sure they are present in the actual file if they were there before.
 USER_TO_JOB_FILTER_MAP = {
     "희망_근무지역": "location", 
     "희망_근무형태": "employment_type",
@@ -124,8 +109,6 @@ USER_SEMANTIC_FIELDS = {
 def generate_user_profile_query(user_id: str) -> dict:
     return {"query": {"term": {"ID": user_id}}}
 
-# --- generate_user_preference_based_job_query function ---
-# (Keep existing definition from query_generators.py, it uses generate_job_search_query internally)
 def generate_user_preference_based_job_query(user_profile: dict, semantic_query_parts: list) -> dict:
     filters = {}
     current_semantic_texts = list(semantic_query_parts)
@@ -144,14 +127,11 @@ def generate_user_preference_based_job_query(user_profile: dict, semantic_query_
                 current_semantic_texts.append(skill_entry["술기명"])
     combined_text_query = " ".join(current_semantic_texts)
     # This will now call the updated generate_job_search_query.
-    # If vector search is desired for this path, this function would also need to handle vector generation
-    # and pass query_vector & vector_field_name to generate_job_search_query.
-    # For now, it will use the text-based fallback within generate_job_search_query.
+    # For vector search through this path, this function would need to generate embeddings for combined_text_query
+    # and pass query_vector & vector_field_name. Currently, it will rely on text-based fallback.
     job_query = generate_job_search_query(text_query=combined_text_query, filters=filters)
     return job_query
 
-# --- generate_similar_users_query function ---
-# (Keep existing definition from query_generators.py)
 def generate_similar_users_query(user_profile: dict) -> dict:
     should_clauses = []
     must_not_clauses = [{"term": {"ID": user_profile.get("ID", "")}}] 
@@ -174,28 +154,27 @@ def generate_similar_users_query(user_profile: dict) -> dict:
     }
     return query
 
-# generate_similar_job_query (from original job_search_tool.py content, ensure it's here)
-# This was defined in query_generators.py in a previous step.
 def generate_similar_job_query(board_id: str, job_details: dict) -> dict:
     must_clauses = []
     should_clauses = []
-    if job_details.get(JOB_FIELD_MAP["specialty"]):
+    if job_details.get(JOB_FIELD_MAP["specialty"]): 
         should_clauses.append({
             "match": {JOB_FIELD_MAP["specialty"]: job_details[JOB_FIELD_MAP["specialty"]]}
         })
-    if job_details.get(JOB_FIELD_MAP["location"]):
+    if job_details.get(JOB_FIELD_MAP["location"]): 
         should_clauses.append({
             "match": {JOB_FIELD_MAP["location"]: job_details[JOB_FIELD_MAP["location"]]}
         })
-    if job_details.get(JOB_FIELD_MAP["org_type"]):
+    if job_details.get(JOB_FIELD_MAP["org_type"]): 
         should_clauses.append({
             "term": {JOB_FIELD_MAP["org_type"]: job_details[JOB_FIELD_MAP["org_type"]]}
         })
-    if job_details.get(JOB_FIELD_MAP["content_semantic"]):
+    semantic_content_for_mlt = job_details.get(JOB_FIELD_MAP["content_semantic"]) 
+    if semantic_content_for_mlt:
         should_clauses.append({
             "more_like_this": {
-                "fields": [JOB_FIELD_MAP["content_semantic"], JOB_FIELD_MAP["title"]],
-                "like": job_details[JOB_FIELD_MAP["content_semantic"]],
+                "fields": [JOB_FIELD_MAP["title"], JOB_FIELD_MAP["content_semantic"]], 
+                "like": semantic_content_for_mlt,
                 "min_term_freq": 1,
                 "max_query_terms": 12
             }
@@ -206,7 +185,7 @@ def generate_similar_job_query(board_id: str, job_details: dict) -> dict:
                 "must": must_clauses,
                 "should": should_clauses,
                 "must_not": [
-                    {"term": {JOB_FIELD_MAP["board_id"]: board_id}}
+                    {"term": {JOB_FIELD_MAP["board_id"]: board_id}} 
                 ],
                 "minimum_should_match": 1 if should_clauses else 0 
             }
